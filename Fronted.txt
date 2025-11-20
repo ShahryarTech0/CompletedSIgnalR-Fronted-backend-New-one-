@@ -1,0 +1,596 @@
+services/Notification.service.ts::
+______________________________
+
+import { Injectable } from '@angular/core';
+import * as signalR from '@microsoft/signalr';
+import { MessageToastService } from './message-toast.service';
+import { BehaviorSubject } from 'rxjs';
+import { Router } from '@angular/router';
+
+export interface SignalRMessage {
+  Id: number;
+  Title: string;
+  Message: string;
+  Type?: string | null; // e.g., "NewEnquiry", "Enquiry", "Complain", etc.
+  IsShow?: boolean;
+  OccurredAt: Date | string;
+  [key: string]: any; // any other fields
+}
+
+@Injectable({
+  providedIn: 'root'
+})
+export class NotificationService {
+  private connection!: signalR.HubConnection;
+
+  // Observable to share messages with other components
+  private messagesSource = new BehaviorSubject<SignalRMessage | null>(null);
+  public messages$ = this.messagesSource.asObservable();
+
+  constructor(private toast: MessageToastService, private router: Router) {}
+
+  startConnection(userId: number, hubUrl: string) {
+    this.connection = new signalR.HubConnectionBuilder()
+      .withUrl(hubUrl, { transport: signalR.HttpTransportType.ServerSentEvents })
+      .withAutomaticReconnect()
+      .configureLogging(signalR.LogLevel.Information)
+      .build();
+
+  this.connection.on('ReceiveMessage', (data: any) => {
+  let msg;
+  console.log('data ',data)
+  try {
+    msg = typeof data === 'string' ? JSON.parse(data) : data;
+  } catch {
+    console.error('Invalid JSON from server:', data);
+    return;
+  }
+
+  console.log('💬 SignalR Notification:', msg);
+  console.log('📋 Notification Type received:', msg.Type);
+  console.log('📋 Notification Type (lowercase):', msg.Type?.toLowerCase());
+  console.log('🆔 Notification ID:', msg.Id);
+
+  // Determine notification type and route
+  const notificationType = (msg.Type?.toLowerCase() || '').trim();
+  let route = '';
+
+  // Check notification type and set appropriate route
+  // Handle Enquiry
+  if (notificationType === 'enquiry' || notificationType.includes('enquiry')) {
+    route = '/enquries';
+    console.log('✅ Matched Enquiry, route set to:', route);
+  } 
+  // Handle Appointment - check for various possible values
+  else if (notificationType === 'appointment' || 
+           notificationType === 'appointments' ||
+           notificationType.includes('appointment')) {
+    route = '/appointments';
+    console.log('✅ Matched Appointment, route set to:', route);
+  } 
+  // Handle Complaint - check for various possible values
+  else if (notificationType === 'complain' || 
+           notificationType === 'complaint' || 
+           notificationType === 'complaints' ||
+           notificationType.includes('complain')) {
+    route = '/complaints';
+  }
+  // Fallback: If Type is not set, check title/message content
+  else if (!notificationType || notificationType === '') {
+    const titleLower = (msg.Title || '').toLowerCase();
+    const messageLower = (msg.Message || '').toLowerCase();
+    
+    if (titleLower.includes('appointment') || messageLower.includes('appointment')) {
+      route = '/appointments';
+    } else if (titleLower.includes('enquiry') || titleLower.includes('enquirey') || 
+               messageLower.includes('enquiry') || messageLower.includes('enquirey')) {
+      route = '/enquries';
+    } else if (titleLower.includes('complain') || messageLower.includes('complain')) {
+      route = '/complaints';
+    }
+  }
+
+  // Show toast with route if it's a known notification type, otherwise show without route
+  if (route) {
+    console.log(`Notification type: ${notificationType}, routing to: ${route}, Id: ${msg.Id}`);
+    this.toast.showWithRoute({
+      Id: msg.Id || 0, // Use Id from server, default to 0 if not provided
+      title: msg.Title,
+      message: msg.Message,
+      type: 'success',
+      duration: 0, // persistent
+      route: route
+    });
+  } else {
+    // For unknown types, just show a normal toast without navigation
+    this.toast.show({
+      Id: msg.Id || 0, // Use Id from server, default to 0 if not provided
+      title: msg.Title,
+      message: msg.Message,
+      type: 'success',
+      duration: 0,
+      route: ''
+    });
+  }
+
+  // Notify Dashboard or other subscribers
+  this.messagesSource.next(msg);
+});
+
+
+    this.connection
+      .start()
+      .then(() => this.connection.invoke('RegisterToGroup', userId, ['Enquiry', 'Complain','Appointment']))
+      .then(() => console.log('✔ Added to Groups'))
+      .catch(err => console.error('SignalR Error:', err));
+  }
+
+  stopConnection() {
+    if (this.connection) {
+      this.connection.stop().then(() => console.log('❌ SignalR Disconnected'));
+    }
+  }
+}
+
+
+
+services/message-toast.ts::
+__________________________________________
+
+import { Injectable } from '@angular/core';
+import { ToastrService, ActiveToast, IndividualConfig, ToastRef } from 'ngx-toastr';
+import { Router } from '@angular/router';
+
+export interface MessageToast {
+  Id: number;
+  title: string;
+  message: string;
+  type?: 'success' | 'info' | 'warning' | 'error';
+  duration?: number; // 0 = persistent
+  //onClick?: () => void; // optional click callback
+  route: string
+}
+
+@Injectable({
+  providedIn: 'root'
+})
+export class MessageToastService {
+  constructor(private toastr: ToastrService, private router: Router) {}
+
+  show(msg: MessageToast) {
+    const type = msg.type || 'info';
+    const duration = msg.duration ?? 0;
+
+    const options: Partial<IndividualConfig> = {
+      enableHtml: true,
+      timeOut: duration,
+      extendedTimeOut: 0,
+      closeButton: true,
+      tapToDismiss: true,   // IMPORTANT
+      progressBar: false,
+      onActivateTick: true,
+      positionClass: 'toast-bottom-right',
+      //toastClass: msg.onClick ? 'toast-clickable' : undefined
+    };
+
+let toastRef: ActiveToast<any>;
+
+switch (type) {
+  case 'success':
+    toastRef = this.toastr.success(msg.message, msg.title, options);
+    break;
+  case 'warning':
+    toastRef = this.toastr.warning(msg.message, msg.title, options);
+    break;
+  case 'error':
+    toastRef = this.toastr.error(msg.message, msg.title, options);
+    break;
+  default:
+    toastRef = this.toastr.info(msg.message, msg.title, options);
+}
+
+console.log('toastRef', toastRef);
+console.log('📬 Toast route:', msg.route);
+console.log('📬 Toast message:', msg);
+
+if (toastRef?.onTap && msg.route !== '') {
+  console.log('✅ Setting up navigation to:', msg.route, 'with Id:', msg.Id);
+  toastRef.onTap.subscribe(() => {
+    console.log('🖱️ Toast clicked! Navigating to:', msg.route, 'with Id:', msg.Id);
+    // Navigate with ID as query parameter if ID is valid
+    if (msg.Id && msg.Id > 0) {
+      this.router.navigate([msg.route], { queryParams: { id: msg.Id } });
+    } else {
+      this.router.navigate([msg.route]);
+    }
+  });
+  
+  // Add cursor pointer style to indicate clickability
+  setTimeout(() => {
+    const toastElement = document.querySelector(`#${toastRef.toastId}`);
+    if (toastElement) {
+      (toastElement as HTMLElement).style.cursor = 'pointer';
+      console.log('✅ Cursor pointer style applied to toast');
+    } else {
+      console.warn('⚠️ Toast element not found for ID:', toastRef.toastId);
+    }
+  }, 0);
+} else {
+  if (!toastRef?.onTap) {
+    console.warn('⚠️ Toast onTap not available');
+  }
+  if (msg.route === '') {
+    console.log('ℹ️ No route specified, toast is not clickable');
+  }
+}
+
+
+    // Add cursor pointer style if clickable (use setTimeout to ensure DOM is ready)
+    // if (msg.onClick && toastRef) {
+    //   console.log('Check')
+    //   this.router.navigate(['/enquries']);
+    //   // setTimeout(() => {
+    //   //   // Try to find the toast element in the DOM
+    //   //   const toastContainer = document.querySelector(`#${toastRef.toastId}`);
+    //   //   if (toastContainer) {
+    //   //     (toastContainer as HTMLElement).style.cursor = 'pointer';
+    //   //   }
+    //   // }, 0);
+    // }
+  }
+
+  // Shortcut for Angular Router navigation
+  showWithRoute(msg: MessageToast/*, route: string*/) {
+    //msg.onClick = () => this.router.navigate([route]);
+    console.log(msg)
+    this.show(msg);
+  }
+}
+
+
+app.component.ts::
+__________________________________
+
+import { Component } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+import { MessageToastService } from './core/services/message-toast.service';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [RouterOutlet],
+  templateUrl: './app.component.html',
+  styleUrls: ['./app.component.css']
+})
+export class AppComponent {
+  title = 'My SKM Admin';
+
+  constructor(private toast: MessageToastService) {}
+
+  // Add this back
+  showTestToast() {
+    this.toast.show({
+      Id: -1,
+      title: 'Test',
+      message: 'This is a test toast',
+      type: 'info',
+      duration: 3000,
+      route: '' // Empty route for test toast (no navigation)
+    });
+  }
+}
+
+
+
+header/header.component.ts::
+____________________________________
+
+import { Component, inject, OnInit, OnDestroy } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { CommonModule } from '@angular/common';
+import { AuthService } from '../../../core/services/auth.service';
+import { NotificationService } from '../../../core/services/notification.service';
+
+@Component({
+  selector: 'app-header',
+  standalone: true,
+  imports: [RouterLink, CommonModule],
+  templateUrl: './header.component.html',
+  styleUrls: ['./header.component.css'],
+})
+export class HeaderComponent implements OnInit, OnDestroy {
+  auth: AuthService = inject(AuthService);
+
+  constructor(private notificationService: NotificationService) {}
+
+  ngOnInit(): void {
+    const userId = this.auth.user?.id;
+    if (userId) {
+      // Start SignalR notifications
+      this.notificationService.startConnection(
+        userId,
+        'https://localhost:7250/NotificationHub'
+      );
+    }
+  }
+
+  ngOnDestroy(): void {
+    this.notificationService.stopConnection();
+  }
+}
+
+Dashboard.component.ts::
+________________________________________
+
+import { Component } from '@angular/core';
+import { MessageToastService } from '../../../core/services/message-toast.service';
+import { Router } from '@angular/router';
+import { NotificationService } from '../../../core/services/notification.service';
+import { Subscription } from 'rxjs';
+declare var $: any;
+@Component({
+  selector: 'app-dashboard',
+  standalone: true,
+  imports: [],
+  templateUrl: './dashboard.component.html',
+  styleUrl: './dashboard.component.css',
+})
+export class DashboardComponent {
+
+  private sub!: Subscription;
+  public latestMessage: any;
+
+  constructor(private notificationService: NotificationService,private toast: MessageToastService,) { }
+
+  ngOnInit(): void {
+    this.sub = this.notificationService.messages$.subscribe(msg => {
+      if (msg) {
+        debugger
+        this.latestMessage = msg;
+        console.log('📩 Dashboard received message:', msg);
+
+        // Determine notification type and route
+        const notificationType = msg.Type?.toLowerCase() || '';
+        let route = '';
+
+        // Check notification type and set appropriate route
+        // Handle Enquiry
+        if (notificationType === 'enquiry' || notificationType.includes('enquiry')) {
+          route = '/enquries';
+        } 
+        // Handle Appointment - check for various possible values
+        else if (notificationType === 'appointment' || 
+                 notificationType === 'appointments' ||
+                 notificationType.includes('appointment')) {
+          route = '/appointments';
+        } 
+        // Handle Complaint - check for various possible values
+        else if (notificationType === 'complain' || 
+                 notificationType === 'complaint' || 
+                 notificationType === 'complaints' ||
+                 notificationType.includes('complain')) {
+          route = '/complaints';
+        }
+
+        // Show toast with route if it's a known notification type, otherwise show without route
+        if (route) {
+          this.toast.showWithRoute({
+            Id: msg.Id || 0, // Use Id from server, default to 0 if not provided
+            title: msg.Title,
+            message: msg.Message,
+            type: 'success',
+            duration: 0, // persistent
+            route: route
+          });
+        } else {
+          // For unknown types, just show a normal toast without navigation
+          this.toast.show({
+            Id: msg.Id || 0, // Use Id from server, default to 0 if not provided
+            title: msg.Title,
+            message: msg.Message,
+            type: 'success',
+            duration: 0, // persistent
+            route: ''
+          });
+        }
+
+        // Now you can render it in the template
+      }
+    });
+  }
+
+  ngAfterViewInit(): void {
+    // EasyPieChart
+    $('.chart').easyPieChart({
+      barColor: '#f8ac59',
+      scaleLength: 5,
+      lineWidth: 4,
+      size: 80,
+    });
+
+    $('.chart2').easyPieChart({
+      barColor: '#1c84c6',
+      scaleLength: 5,
+      lineWidth: 4,
+      size: 80,
+    });
+
+    // Sample datasets
+    const data2: [number, number][] = [
+      [this.gd(2012, 1, 1), 7],
+      [this.gd(2012, 1, 2), 6],
+      [this.gd(2012, 1, 3), 4],
+      [this.gd(2012, 1, 4), 8],
+      [this.gd(2012, 1, 5), 9],
+      [this.gd(2012, 1, 6), 7],
+      [this.gd(2012, 1, 7), 5],
+      [this.gd(2012, 1, 8), 4],
+      [this.gd(2012, 1, 9), 7],
+      [this.gd(2012, 1, 10), 8],
+      [this.gd(2012, 1, 11), 9],
+      [this.gd(2012, 1, 12), 6],
+      [this.gd(2012, 1, 13), 4],
+      [this.gd(2012, 1, 14), 5],
+      [this.gd(2012, 1, 15), 11],
+      [this.gd(2012, 1, 16), 8],
+      [this.gd(2012, 1, 17), 8],
+      [this.gd(2012, 1, 18), 11],
+      [this.gd(2012, 1, 19), 11],
+      [this.gd(2012, 1, 20), 6],
+      [this.gd(2012, 1, 21), 6],
+      [this.gd(2012, 1, 22), 8],
+      [this.gd(2012, 1, 23), 11],
+      [this.gd(2012, 1, 24), 13],
+      [this.gd(2012, 1, 25), 7],
+      [this.gd(2012, 1, 26), 9],
+      [this.gd(2012, 1, 27), 9],
+      [this.gd(2012, 1, 28), 8],
+      [this.gd(2012, 1, 29), 5],
+      [this.gd(2012, 1, 30), 8],
+      [this.gd(2012, 1, 31), 25],
+    ];
+
+    const data3: [number, number][] = [
+      [this.gd(2012, 1, 1), 800],
+      [this.gd(2012, 1, 2), 500],
+      [this.gd(2012, 1, 3), 600],
+      [this.gd(2012, 1, 4), 700],
+      [this.gd(2012, 1, 5), 500],
+      [this.gd(2012, 1, 6), 456],
+      [this.gd(2012, 1, 7), 800],
+      [this.gd(2012, 1, 8), 589],
+      [this.gd(2012, 1, 9), 467],
+      [this.gd(2012, 1, 10), 876],
+      [this.gd(2012, 1, 11), 689],
+      [this.gd(2012, 1, 12), 700],
+      [this.gd(2012, 1, 13), 500],
+      [this.gd(2012, 1, 14), 600],
+      [this.gd(2012, 1, 15), 700],
+      [this.gd(2012, 1, 16), 786],
+      [this.gd(2012, 1, 17), 345],
+      [this.gd(2012, 1, 18), 888],
+      [this.gd(2012, 1, 19), 888],
+      [this.gd(2012, 1, 20), 888],
+      [this.gd(2012, 1, 21), 987],
+      [this.gd(2012, 1, 22), 444],
+      [this.gd(2012, 1, 23), 999],
+      [this.gd(2012, 1, 24), 567],
+      [this.gd(2012, 1, 25), 786],
+      [this.gd(2012, 1, 26), 666],
+      [this.gd(2012, 1, 27), 888],
+      [this.gd(2012, 1, 28), 900],
+      [this.gd(2012, 1, 29), 178],
+      [this.gd(2012, 1, 30), 555],
+      [this.gd(2012, 1, 31), 993],
+    ];
+
+    const dataset: any[] = [
+      {
+        label: 'Number of orders',
+        data: data3,
+        color: '#1ab394',
+        bars: {
+          show: true,
+          align: 'center',
+          barWidth: 24 * 60 * 60 * 600,
+          lineWidth: 0,
+        },
+      },
+      {
+        label: 'Payments',
+        data: data2,
+        yaxis: 2,
+        color: '#1C84C6',
+        lines: {
+          lineWidth: 1,
+          show: true,
+          fill: true,
+          fillColor: {
+            colors: [{ opacity: 0.2 }, { opacity: 0.4 }],
+          },
+        },
+      },
+    ];
+
+    const options: any = {
+      xaxis: {
+        mode: 'time',
+        tickSize: [3, 'day'],
+        tickLength: 0,
+        axisLabel: 'Date',
+        axisLabelUseCanvas: true,
+        axisLabelFontSizePixels: 12,
+        axisLabelFontFamily: 'Arial',
+        axisLabelPadding: 10,
+        color: '#d5d5d5',
+      },
+      yaxes: [
+        {
+          position: 'left',
+          max: 1070,
+          color: '#d5d5d5',
+        },
+        {
+          position: 'right',
+          color: '#d5d5d5',
+        },
+      ],
+      legend: {
+        noColumns: 1,
+        labelBoxBorderColor: '#000000',
+        position: 'nw',
+      },
+      grid: {
+        hoverable: false,
+        borderWidth: 0,
+      },
+    };
+
+    // Flot Chart
+    $.plot($('#flot-dashboard-chart'), dataset, options);
+
+    // Vector Map
+    const mapData: Record<string, number> = {
+      US: 298,
+      SA: 200,
+      DE: 220,
+      FR: 540,
+      CN: 120,
+      AU: 760,
+      BR: 550,
+      IN: 200,
+      GB: 120,
+    };
+
+    $('#world-map').vectorMap({
+      map: 'world_mill_en',
+      backgroundColor: 'transparent',
+      regionStyle: {
+        initial: {
+          fill: '#e4e4e4',
+          'fill-opacity': 0.9,
+          stroke: 'none',
+        },
+      },
+      series: {
+        regions: [
+          {
+            values: mapData,
+            scale: ['#1ab394', '#22d6b1'],
+            normalizeFunction: 'polynomial',
+          },
+        ],
+      },
+    });
+  }
+
+  private gd(year: number, month: number, day: number): number {
+    return new Date(year, month - 1, day).getTime();
+  }
+
+
+
+}
+
+
+
